@@ -10,165 +10,198 @@ import com.example.EpidemicSimulator.repository.SimulationResultRepository;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.transaction.Transactional;
 import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.math3.distribution.BinomialDistribution;
 import org.springframework.stereotype.Service;
-import java.math.RoundingMode;
+
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @AllArgsConstructor
 public class SimulationService {
 
     private final SimulationRepository simulationRepository;
-    private final SimulationResultRepository simulationResultRepository;
     private final SimulationMapper simulationMapper;
     private final SimulationResultMapper simulationResultMapper;
+    private final DatabaseService databaseService;
+    private final SimulationResultRepository simulationResultRepository;
     @Transactional
-    public void createSimulation(SimulationDTO simulationDTO) {
-        simulationRepository.save(simulationMapper.toEntity(simulationDTO));
+    public SimulationDTO updateSimulation(SimulationDTO simulationDTO) {
+        if(simulationDTO.id() == null) throw new NullPointerException("UUID not provided");
+        simulationRepository.findById(simulationDTO.id())
+                .orElseThrow(() -> new EntityNotFoundException("Entity not found"));
+        Simulation existingSimulation;
+        existingSimulation = simulationMapper.toEntity(simulationDTO);
+        simulationRepository.save(existingSimulation);
+        simulationResultRepository.deleteAllBySimulationId(simulationDTO.id());
+        List<SimulationResultDTO> results = startSimulation(existingSimulation);
+        saveSimulationResults(results,existingSimulation.getId());
+        return simulationDTO;
+    }
+
+    @Transactional
+    public Simulation saveSimulation(SimulationDTO simulationDTO) {
+        return simulationRepository.save(simulationMapper.toEntity(simulationDTO));
     }
     @Transactional
-    public void createSimulationResult(SimulationResultDTO simulationResultDTO){
-        simulationResultRepository.save(simulationResultMapper.toEntity(simulationResultDTO));
+    public List<SimulationDTO> getAllSimulations(){
+        return simulationRepository.findAll().stream().map(simulationMapper::toDTO).collect(Collectors.toList());
     }
 
-    public SimulationResultDTO getSimulationResults(UUID simulationUUID) {
-        Simulation simulation = simulationRepository.findById(simulationUUID)
-                .orElseThrow(() -> new EntityNotFoundException("Simulation with provided UUID doesn't exist"));
-
-
-        SimulationResultDTO simulationResultDTO =   startSimulation(simulation);
-
-        return simulationResultDTO;
+    @Transactional
+    public void saveSimulationResults(List<SimulationResultDTO> results, UUID simulationId) {
+        databaseService.saveSimulationResults(results, simulationId);
     }
 
-    private SimulationResultDTO startSimulation(Simulation simulation)
-    {
-        //Represent how many new infection occur in [i] day
+    public List<SimulationResultDTO> createAndSaveSimulation(SimulationDTO simulationDTO) {
+        Simulation simulation = saveSimulation(simulationDTO);
+        List<SimulationResultDTO> results = startSimulation(simulation);
+        saveSimulationResults(results, simulation.getId());
+        return results;
+    }
+
+    public List<SimulationResultDTO> getSimulationResults(UUID id) {
+        return simulationResultRepository.findAllBySimulationId(id).orElseThrow(() -> new EntityNotFoundException("Simulation not found")).stream().map(simulationResultMapper::toDTO).collect(Collectors.toList());
+    }
+    private static void updateRecoveredCountPerDay(Simulation simulation, ArrayList<Long> newInfectionCountPerDay, List<Long> recoveredCountPerDay, int i) {
+        if (i >= simulation.getRecoveryTime()) {
+            recoveredCountPerDay.add(i, recoveredCountPerDay.get(i - 1) + newInfectionCountPerDay.get(i - simulation.getRecoveryTime()));
+            newInfectionCountPerDay.set(i - simulation.getRecoveryTime(), 0L);
+        } else {
+            recoveredCountPerDay.add(i, 0L);
+        }
+    }
+    private List<SimulationResultDTO> startSimulation(Simulation simulation) {
+        List<SimulationResultDTO> results = new ArrayList<>(simulation.getSimulationDuration());
         ArrayList<Long> newInfectionCountPerDay = new ArrayList<>();
-        newInfectionCountPerDay.add(simulation.getInitialInfectedCount());
-
-        ArrayList<Long> infectionCountPerDay = new ArrayList<>();
-        infectionCountPerDay.add(simulation.getInitialInfectedCount());
-
         List<Long> recoveredCountPerDay = new ArrayList<>();
-        recoveredCountPerDay.add(0L);
         List<Long> deceasedCountPerDay = new ArrayList<>();
-        deceasedCountPerDay.add(0L);
         List<Long> healthyCountPerDay = new ArrayList<>();
-        healthyCountPerDay.add(0,simulation.getPopulationSize()-simulation.getInitialInfectedCount());
-        SimulationResultDTO simulationResultDTO = new SimulationResultDTO(simulation,0,infectionCountPerDay.get(0),healthyCountPerDay.get(0),deceasedCountPerDay.get(0),recoveredCountPerDay.get(0));
-        simulationResultRepository.save(simulationResultMapper.toEntity(simulationResultDTO));
+        List<Long> infectionCountPerDay = new ArrayList<>();
+        //initialize first day
+        results.add(initializeDayOneOfSimulation(simulation, newInfectionCountPerDay, recoveredCountPerDay, deceasedCountPerDay, healthyCountPerDay, infectionCountPerDay));
 
+        //Update of simulation for each day
         for (int i = 1; i < simulation.getSimulationDuration(); i++) {
-            //Count how many infected people is on [i] day  ( infectedCountInPreviousDay * reproductionRate  + infectedCountInPreviousDay )
-            long estimatedInfectionToday = simulation.getReproductionRate().multiply(new BigDecimal(infectionCountPerDay.get(i-1))).add(new BigDecimal(infectionCountPerDay.get(i-1))).longValueExact();
-            if(healthyCountPerDay.get(i-1) >= estimatedInfectionToday){
-                infectionCountPerDay.add(i,estimatedInfectionToday);
-            }else {
-                //EVERYONE IS INFECTED
-                infectionCountPerDay.add(i,infectionCountPerDay.get(i-1) + healthyCountPerDay.get(i-1));
-            }
 
+
+            updateTotalInfectedPeople(simulation, infectionCountPerDay, healthyCountPerDay, i);
             //Count how many new infections occur on [i] day
-            newInfectionCountPerDay.add(i,infectionCountPerDay.get(i) - infectionCountPerDay.get(i-1));
+            newInfectionCountPerDay.add(i, infectionCountPerDay.get(i) - infectionCountPerDay.get(i - 1));
             //Remove infected people from healthy status on [i] day
-            healthyCountPerDay.add(i,healthyCountPerDay.get(i-1) - newInfectionCountPerDay.get(i));
+            healthyCountPerDay.add(i, healthyCountPerDay.get(i - 1) - newInfectionCountPerDay.get(i));
 
+            updateDeceasedCountPerDay(simulation, newInfectionCountPerDay, deceasedCountPerDay, i);
+
+            updateRecoveredCountPerDay(simulation, newInfectionCountPerDay, recoveredCountPerDay, i);
+
+
+            long numberOfInfectedPeople = simulation.getPopulationSize() - healthyCountPerDay.get(i) - deceasedCountPerDay.get(i) - recoveredCountPerDay.get(i);
+
+            SimulationResultDTO simulationResultDTO = new SimulationResultDTO(i, numberOfInfectedPeople, healthyCountPerDay.get(i), deceasedCountPerDay.get(i), recoveredCountPerDay.get(i));
+            results.add(simulationResultDTO);
         }
-
-        ArrayList<Long> deathsPerDay = calculateNumberOfDeathsForEachDay(newInfectionCountPerDay,simulation);
-
-        for (int i = 1; i < simulation.getSimulationDuration(); i++) {
-
-            if(i >= simulation.getMortalityTime()){
-                deceasedCountPerDay.add(i,deceasedCountPerDay.get(i-1) + calculateHowManyDeathsCurrentDay(newInfectionCountPerDay,deathsPerDay,i - simulation.getMortalityTime() + 1) );
-                newInfectionCountPerDay = killPeopleWhichAreInfected(newInfectionCountPerDay,deathsPerDay,i - simulation.getMortalityTime() +1);
-            }else {
-                deceasedCountPerDay.add(i,0L);
-            }
-
-            if(i >= simulation.getRecoveryTime()){
-                recoveredCountPerDay.add(i ,recoveredCountPerDay.get(i-1) + newInfectionCountPerDay.get(i - simulation.getRecoveryTime()));
-                newInfectionCountPerDay.set(i - simulation.getRecoveryTime(),0L);
-            }else {
-                recoveredCountPerDay.add(i,0L);
-            }
-
-
-
-        }
-
-        for (int i = 1; i < simulation.getSimulationDuration(); i++) {
-
-
-            infectionCountPerDay.set(i,infectionCountPerDay.get(i) -( recoveredCountPerDay.get(i) + deceasedCountPerDay.get(i)));
-
-            simulationResultDTO = new SimulationResultDTO(simulation,i,infectionCountPerDay.get(i),healthyCountPerDay.get(i),deceasedCountPerDay.get(i),recoveredCountPerDay.get(i));
-
-            simulationResultRepository.save(simulationResultMapper.toEntity(simulationResultDTO));
-        }
-
-
-        return null;
-    }
-    private Long calculateHowManyDeathsCurrentDay(ArrayList<Long> newInfectionCountPerDay, ArrayList<Long> deathsPerDay, int currentDay){
-        long totalDeaths = 0;
-        for (int i = 0; i < currentDay; i++) {
-            if(newInfectionCountPerDay.get(i) >= deathsPerDay.get(i)){
-                totalDeaths +=  deathsPerDay.get(i);
-            }else {
-                totalDeaths +=newInfectionCountPerDay.get(i);
-            }
-        }
-        return totalDeaths;
-
+        return results;
     }
 
-
-
-    private ArrayList<Long> killPeopleWhichAreInfected(ArrayList<Long> newInfectionCountPerDay, ArrayList<Long> deathsPerDay, int currentDay) {
-        for (int i = 0; i < currentDay; i++) {
-
-            if(newInfectionCountPerDay.get(i) >= deathsPerDay.get(i)){
-                newInfectionCountPerDay.set(i,newInfectionCountPerDay.get(i) - deathsPerDay.get(i));
-            }else {
-                //All people infected in day [i] - simulation time to death ARE KILLED
-                newInfectionCountPerDay.set(i,0L);
-            }
-
+    private void updateDeceasedCountPerDay(Simulation simulation, ArrayList<Long> newInfectionCountPerDay, List<Long> deceasedCountPerDay, int day) {
+        if (day >= simulation.getMortalityTime()) {
+            deceasedCountPerDay.add(day, deceasedCountPerDay.get(day - 1) + calculateHowManyDeathsCurrentDay(newInfectionCountPerDay, day - simulation.getMortalityTime() + 1, simulation));
+        } else {
+            deceasedCountPerDay.add(day, 0L);
         }
-        return newInfectionCountPerDay;
+    }
+
+    private SimulationResultDTO initializeDayOneOfSimulation(Simulation simulation, List<Long> newInfectionCountPerDay, List<Long> recoveredCountPerDay, List<Long> deceasedCountPerDay, List<Long> healthyCountPerDay, List<Long> infectionCountPerDay) {
+        newInfectionCountPerDay.add(simulation.getInitialInfectedCount());
+        infectionCountPerDay.add(simulation.getInitialInfectedCount());
+        recoveredCountPerDay.add(0L);
+        deceasedCountPerDay.add(0L);
+        healthyCountPerDay.add(0, simulation.getPopulationSize() - simulation.getInitialInfectedCount());
+
+        return new SimulationResultDTO(0, infectionCountPerDay.get(0), healthyCountPerDay.get(0), deceasedCountPerDay.get(0), recoveredCountPerDay.get(0));
     }
 
     /**
-     *
-     * Calculate how many people die each day depending on mortality ratio
-     * result is always lowered because can't be half person dead
+     * Update list of how many infected people are on [i] day
+     * number of infected people is rounded to a whole number
+     * <p>
+     * When reproduction rate is more than 1 value is simply multiplied
+     * When reproduction rate is lower than 1 there is reproduction rate chance that new person will be infected
      */
-     private ArrayList<Long> calculateNumberOfDeathsForEachDay(List<Long> newInfectionCountPerDay,Simulation simulationSettings){
-         ArrayList<Long> deathsPerDay = new ArrayList<>();
-         for (int i = 0; i < newInfectionCountPerDay.size(); i++) {
-             BigDecimal infectionCount = new BigDecimal(newInfectionCountPerDay.get(i));
-             BigDecimal mortalityValue = simulationSettings.getMortalityRate().multiply(infectionCount);
-             BigDecimal flooredMortalityValue = mortalityValue.setScale(0, RoundingMode.HALF_UP);
-             long mortalityLong = flooredMortalityValue.longValueExact();
+    private void updateTotalInfectedPeople(Simulation simulation, List<Long> infectionCountPerDay, List<Long> healthyCountPerDay, int i) {
 
-             deathsPerDay.add(i, mortalityLong);
-         }
+        long previousDayInfected = infectionCountPerDay.get(i - 1);
+        long totalInfectionToday;
+        BigDecimal reproductionRate = simulation.getReproductionRate();
 
-
-
-        return deathsPerDay;
+        if (healthyCountPerDay.get(i - 1) == 0) {
+            infectionCountPerDay.add(i, previousDayInfected);
+            return;
+        }
+        // Generate the new infections using a binomial distribution if rate <= 1, otherwise directly use the calculated value
+        if (reproductionRate.doubleValue() < 1.0) {
+            BinomialDistribution newInfectionsToday = new BinomialDistribution((int) Math.min(previousDayInfected, Integer.MAX_VALUE), reproductionRate.doubleValue());
+            totalInfectionToday = previousDayInfected + newInfectionsToday.sample();
+        } else {
+            totalInfectionToday = simulation.getReproductionRate().multiply(new BigDecimal(infectionCountPerDay.get(i - 1))).add(new BigDecimal(infectionCountPerDay.get(i - 1))).longValue();
+        }
+        //Check if there are still healthy people to infect
+        if (healthyCountPerDay.get(i - 1) >= totalInfectionToday - previousDayInfected) {
+            infectionCountPerDay.add(i, totalInfectionToday);
+        } else {
+            // EVERYONE IS INFECTED
+            infectionCountPerDay.add(i, previousDayInfected + healthyCountPerDay.get(i - 1));
+        }
     }
 
-    /*
-    private SimulationResultDTO updateDeceasedCount(SimulationResultDTO currentSimulationStatus,Simulation simulationSettings){
-        return null;
+
+    /**
+     * Updates list of newInfectionCountPerDay by removing dead people
+     *
+     * @return total number of people died  which were infected Tm days before
+     */
+    private int calculateHowManyDeathsCurrentDay(ArrayList<Long> newInfectionCountPerDay, int currentDay, Simulation simulation) {
+        int totalDeaths = 0;
+        int currentInfectedPeople;
+
+        for (int i = 0; i < currentDay; i++) {
+            long newInfections = newInfectionCountPerDay.get(i);
+
+            if (newInfections == 0) {
+                continue;
+            }
+
+            //To prevent time-consuming operation max value of infected people is Integer.MAX_VALUE otherwise using BinomialDistribution is impossible
+            if (newInfectionCountPerDay.get(i) > Integer.MAX_VALUE) {
+                currentInfectedPeople = Integer.MAX_VALUE;
+            } else {
+                currentInfectedPeople = (int) newInfections;
+            }
+            int deathsToday = calculateDeaths(currentInfectedPeople, simulation.getMortalityRate());
+
+            totalDeaths += deathsToday;
+
+            newInfectionCountPerDay.set(i, newInfectionCountPerDay.get(i) - deathsToday);
+        }
+        return totalDeaths;
     }
-    private SimulationResultDTO updateRecoveredCount(SimulationResultDTO currentSimulationStatus,Simulation simulationSettings ){
-        return null;
-    }*/
+
+    /**
+     * Used BinomialDistribution to highly increase the speed of calculation at the expense of reducing the max size of infectedCount
+     *
+     * @return return number of deaths for specific day
+     */
+    private int calculateDeaths(int infectedCount, BigDecimal mortalityRate) {
+        BinomialDistribution binomial = new BinomialDistribution(infectedCount, mortalityRate.doubleValue());
+        return binomial.sample();
+    }
+
+
+
 }

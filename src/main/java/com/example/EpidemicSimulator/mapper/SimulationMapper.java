@@ -11,11 +11,19 @@ public class SimulationMapper {
     private final ModelMapper modelMapper;
 
     public SimulationDTO toDTO(Simulation simulation) {
-        return modelMapper.map(simulation, SimulationDTO.class);
+        return new SimulationDTO(
+                simulation.getId(),
+                simulation.getName(),
+                simulation.getPopulationSize(),
+                simulation.getInitialInfectedCount(),
+                simulation.getReproductionRate(),
+                simulation.getMortalityRate(),
+                simulation.getRecoveryTime(),
+                simulation.getMortalityTime(),
+                simulation.getSimulationDuration());
     }
 
     public Simulation toEntity(SimulationDTO simulationDTO) {
-        Simulation simulation =  modelMapper.map(simulationDTO, Simulation.class);
-        return  simulation;
+        return modelMapper.map(simulationDTO, Simulation.class);
     }
 }

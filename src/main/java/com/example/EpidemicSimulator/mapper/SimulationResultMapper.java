@@ -12,7 +12,13 @@ public class SimulationResultMapper {
 
     private final ModelMapper modelMapper;
     public SimulationResultDTO toDTO(SimulationResult simulationResult) {
-        return modelMapper.map(simulationResult, SimulationResultDTO.class);
+
+        return new SimulationResultDTO(
+                simulationResult.getDay(),
+                simulationResult.getInfectedCount(),
+                simulationResult.getHealthyCount(),
+                simulationResult.getDeceasedCount(),
+                simulationResult.getRecoveredCount());
     }
 
     public SimulationResult toEntity(SimulationResultDTO simulationResultDTO) {

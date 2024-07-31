@@ -6,35 +6,56 @@ import com.example.EpidemicSimulator.service.SimulationService;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-import java.net.URI;
+import java.util.List;
 import java.util.UUID;
 
 @RestController
 @AllArgsConstructor
+@Validated
 @RequestMapping("/api/v1/simulations")
 public class SimulationController {
 
-    SimulationService simulationService;
+    private final SimulationService simulationService;
+
 
     @PostMapping()
-    ResponseEntity<SimulationDTO> createSimulation(@RequestBody @Valid SimulationDTO simulationDTO){
-        if(simulationDTO!=null){
+    ResponseEntity<List<SimulationResultDTO>> createAndSaveSimulation(@Valid @RequestBody SimulationDTO simulationDTO){
 
-            simulationService.createSimulation(simulationDTO);
+        if(simulationDTO!=null){
+            return  ResponseEntity.ok(simulationService.createAndSaveSimulation(simulationDTO));
         }else {
             throw new NullPointerException("Error creating simulation. Simulation is null");
         }
+    }
 
-        return ResponseEntity
-                .created(URI.create("/api/simulations/" + simulationDTO.name().replaceAll("\\s", "")))
-                .body(simulationDTO);
+    @GetMapping("/results/{SimulationUUID}")
+    ResponseEntity<List<SimulationResultDTO>> simulationResults(@PathVariable UUID SimulationUUID){
+        return ResponseEntity.ok(simulationService.getSimulationResults(SimulationUUID));
+    }
+
+    @GetMapping("/")
+    ResponseEntity<List<SimulationDTO>> simulations(){
+        return ResponseEntity.ok(simulationService.getAllSimulations());
     }
 
 
-    @GetMapping("/{simulationUUID}")
-    ResponseEntity<SimulationResultDTO> getSimulationResults(@PathVariable UUID simulationUUID){
-        return  ResponseEntity.ok(simulationService.getSimulationResults(simulationUUID));
+    @PutMapping()
+    ResponseEntity<SimulationDTO> updateSimulation(
+            @Valid @RequestBody SimulationDTO simulationDTO) {
+
+        if (simulationDTO != null) {
+            SimulationDTO updatedSimulation = simulationService.updateSimulation(simulationDTO);
+            return ResponseEntity.ok(updatedSimulation);
+        } else {
+            throw new NullPointerException("Error updating simulation. Simulation is null");
+        }
     }
+
+
+
+
+
 }

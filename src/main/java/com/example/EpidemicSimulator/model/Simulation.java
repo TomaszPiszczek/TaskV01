@@ -1,11 +1,8 @@
 package com.example.EpidemicSimulator.model;
 
 import jakarta.persistence.*;
-import jakarta.validation.constraints.DecimalMax;
-import jakarta.validation.constraints.DecimalMin;
 import lombok.Getter;
 import lombok.Setter;
-import lombok.ToString;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -13,7 +10,6 @@ import java.util.UUID;
 @Entity
 @Getter
 @Setter
-@ToString
 @Table(name = "simulation")
 public class Simulation {
 
@@ -32,13 +28,9 @@ public class Simulation {
     private Long initialInfectedCount;
 
     @Column(name = "reproduction_rate", nullable = false, precision = 5, scale = 2)
-    @DecimalMin(value = "0.00", message = "Reproduction rate must be between 0.00% and 100.00%")
-    @DecimalMax(value = "100.00", message = "Reproduction rate must be between 0.00% and 100.00%")
     private BigDecimal reproductionRate;
 
     @Column(name = "mortality_rate", nullable = false, precision = 5, scale = 2)
-    @DecimalMin(value = "0.00",  message = "Mortality rate must be between 0.00% and 100.00%")
-    @DecimalMax(value = "100.00",  message = "Mortality rate must be between 0.00% and 100.00%")
     private BigDecimal mortalityRate;
 
     @Column(name = "recovery_time", nullable = false)
@@ -50,18 +42,7 @@ public class Simulation {
     @Column(name = "simulation_duration", nullable = false)
     private Integer simulationDuration;
 
-    public void setReproductionRate(BigDecimal reproductionRate) {
-        if (reproductionRate.compareTo(BigDecimal.ZERO) < 0 || reproductionRate.compareTo(new BigDecimal("100.00")) > 0) {
-            throw new IllegalArgumentException("Reproduction rate must be between 0.00% and 100.00%");
-        }
-        this.reproductionRate = reproductionRate;
-    }
-    public void setMortalityRate(BigDecimal mortalityRate) {
-        if (mortalityRate.compareTo(BigDecimal.ZERO) < 0 || mortalityRate.compareTo(new BigDecimal("100.00")) > 0) {
-            throw new IllegalArgumentException("Mortality rate must be between 0.00% and 100.00%");
-        }
-        this.mortalityRate = mortalityRate;
-    }
+
 
 
 }
